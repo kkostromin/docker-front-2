@@ -1,0 +1,75 @@
+#image: node:slim
+
+stages:          # List of stages for jobs, and their order of execution
+  - build
+  - test
+  - deploy
+  - cleanup
+
+variables:
+  CONTAINER_NAME: "docker-frontend-2" 
+  REGISTRY_IMAGE: "registry.gitlab.envent.ru/root/docker-frontend-2"
+  REGISTRY_NAME: "registry.gitlab.envent.ru"  
+  TAG_NAME: "1.0"
+
+cache:
+  paths:
+    
+    - ubuntu:rolling
+    - node:8
+
+build-job:       
+  stage: build
+  tags:
+    - shell
+  before_script:
+    - echo "$PASSWORD_GITLAB" | docker login -u root --password-stdin $REGISTRY_NAME
+  script:
+    - echo "Compiling the code..."
+
+    - docker build -t $REGISTRY_IMAGE:$TAG_NAME .
+    - docker push $REGISTRY_IMAGE:$TAG_NAME
+    - docker image rm $REGISTRY_IMAGE:$TAG_NAME
+ 
+    - echo good job_!
+    - echo "Compile complete."
+
+
+deploy-job:      # This job runs in the deploy stage.
+  stage: deploy
+  tags:
+    - docker-runner
+  image: ubuntu:rolling
+  cache:
+    paths:
+      - node:14.18-alpine    
+  before_script:
+  - 'which ssh-agent || ( apt-get update -y && apt-get install openssh-client -y )'
+  - mkdir -p ~/.ssh
+  - eval $(ssh-agent -s)
+  - '[[ -f /.dockerenv ]] && echo -e "Host *\n\tStrictHostKeyChecking no\n\n" > ~/.ssh/config'
+  script:
+    - echo "Deploying application..."
+    - ssh-add <(echo "$SSH_PRIVATE_KEY" | tr -d '\r')
+    
+    # remove container if it's up run  remote server
+    - ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker stop $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker rm $CONTAINER_NAME || true"
+    - ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker rmi $REGISTRY_IMAGE:$TAG_NAME || true"
+
+    - ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP  "ls -al"
+    - ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker login -u $CI_REGISTRY_USER -p $CI_REGISTRY_PASSWORD $REGISTRY_NAME"
+    - ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker pull $REGISTRY_IMAGE:$TAG_NAME"
+    - ssh -o StrictHostKeyChecking=no $SERVER_USER@$SERVER_IP "docker run -d -p 80:3000 --name $CONTAINER_NAME $REGISTRY_IMAGE:$TAG_NAME"
+    
+    - echo "Application successfully deployed."
+
+cleanup:
+  tags:
+    - shell
+  stage: cleanup
+  when: always
+  script:
+    - echo "Stop & remove containers"
+    - docker system prune -a -f
+    - echo "Stop & remove containers" 
